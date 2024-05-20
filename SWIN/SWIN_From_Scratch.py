@@ -6,40 +6,44 @@ from keras import layers
 import tensorflow as tf
 import keras
 
-image_shape = (1194, 938)
+
+image_shape = (1280, 1280)
+image_flat = image_shape[0] * image_shape[1]
+# image_shape = (1194, 938)
 batch_size = 10
 num_epochs = 60
 learning_rate = 0.00001
 fold_to_use = 0
 
-num_classes = 100
-input_shape = (1194, 938, 1)
+num_classes = 2
+input_shape = (1280, 1280, 1)
+#input_shape = (1194, 938, 1)
 patch_size = (2, 2)  # 2-by-2 sized patches
 dropout_rate = 0.03  # Dropout rate
 num_heads = 8  # Attention heads
 embed_dim = 64  # Embedding dimension
 num_mlp = 256  # MLP layer size
+patch_channels = patch_size[0] * patch_size[1] * 3
+
 # Convert embedded patches to query, key, and values with a learnable additive
 # value
 qkv_bias = True
 window_size = 2  # Size of attention window
 shift_size = 1  # Size of shifting window
-image_dimension = 32  # Initial image size
+image_dimension = 1280  # Initial image size
 
 num_patch_x = input_shape[0] // patch_size[0]
 num_patch_y = input_shape[1] // patch_size[1]
 
 learning_rate = 1e-3
-batch_size = 128
+batch_size = 10
 num_epochs = 40
 validation_split = 0.1
 weight_decay = 0.0001
 label_smoothing = 0.1
 
-
 # Prepare the data
 # Step 1: Convert our TFRecord dataset to a numpy array, with the correct labels from the cvs files.
-
 dataset_path = 'Mini - SWIN/DK_dataset_1213'
 if not exists('ModelsAndResults/test'):
     makedirs('ModelsAndResults/test')
@@ -51,6 +55,8 @@ lbls = 'Mini - SWIN/NoisyLabels/DK_labels_1213_to_23_fixed.csv'
 
 print('Using dataset: %s' % dataset_path)
 
+
+
 # TF record datasets
 training_dataset = TFRecordDataset(
     input=image_training_list, 
@@ -59,7 +65,7 @@ training_dataset = TFRecordDataset(
     batch_size=batch_size, 
     imgs=imgs,
     lbls=lbls
-).get_dataset()
+)
 
 validation_dataset = TFRecordDataset(
     input=image_validation_list, 
@@ -68,18 +74,33 @@ validation_dataset = TFRecordDataset(
     batch_size=batch_size, 
     imgs=imgs,
     lbls=lbls
-).get_dataset()
+)
 
-training_dataset = training_dataset.map(lambda x, y: (patch_extract(x), y))
-validation_dataset = validation_dataset.map(lambda x, y: (patch_extract(x), y))
+# get input fn
+training_dataset = training_dataset.get_input_fn()
+validation_dataset = validation_dataset.get_input_fn()
+
+training_dataset = training_dataset.map(swin_preprocess_image)
+validation_dataset = validation_dataset.map(swin_preprocess_image)
+
+training_dataset = training_dataset.map(lambda x, y: patch_extract(x, y))
+validation_dataset = validation_dataset.map(lambda x, y: patch_extract(x, y))
 
 # Step 2: Initialize the model and compile it
 
-input_layer = layers.Input(shape=(*image_shape, 1))
-input = MyChannelRepeat(3)(input_layer)
-patches = PatchExtraction(patch_size, embed_dim)(input)
+# TO-DO, check if all other channels are zero-padded due to just setting as 12 instead of my_channel_repeat
+# input = MyChannelRepeat(3)(input)
 
-x = PatchEmbedding(num_patch_x * num_patch_y, embed_dim)(patches)
+# previous input to model
+# image_input = tf.keras.Input(shape=image_shape + (1,), dtype=tf.float32)
+# image_repeat = MyChannelRepeat(3)(image_input)
+
+# input to model
+# patch_x * patch_y * channels
+input_layer = layers.Input(shape=(image_flat // 4, patch_channels))
+
+# patches = PatchExtraction(patch_size, embed_dim)(input)
+x = PatchEmbedding(num_patch_x * num_patch_y, embed_dim)(input_layer)
 x = SwinTransformer(
     dim=embed_dim,
     num_patch=(num_patch_x, num_patch_y),
@@ -103,11 +124,11 @@ x = SwinTransformer(
 )(x)
 
 x = PatchMerging((num_patch_x, num_patch_y), embed_dim=embed_dim)(x)
-x = layers.GlobalAveragePooling2D()(x)
+x = layers.GlobalAveragePooling1D()(x)
 output = layers.Dense(num_classes, activation='softmax')(x)
 
 # Initialize the model
-model = tf.keras.Model(input, output)
+model = tf.keras.Model(input_layer, output)
 
 model.compile(
     loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=label_smoothing),
@@ -117,9 +138,10 @@ model.compile(
     ),
     metrics=[
         keras.metrics.CategoricalAccuracy(name='accuracy'),
-        keras.metrics.TopKCategoricalAccuracy(5, name='top-5-accuracy'),
+        keras.metrics.TopKCategoricalAccuracy(k=5, name='top-5-accuracy'),
     ],
 )
+
 
 history = model.fit(
     training_dataset,

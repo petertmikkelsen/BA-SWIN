@@ -8,7 +8,8 @@ from keras import layers
 
 class TFRecordDataset:
 
-    def __init__(self, input, orig_shape, batch_size, output_shape, imgs=None, lbls=None):
+    def __init__(self, input, orig_shape, batch_size, output_shape, imgs=None, lbls=None,
+                augment=False, augment_level=3):
         if isinstance(input, list) or isinstance(input, np.ndarray):
             self.input_filenames = np.array([expanduser(f.strip()) for f in input])
         else:
@@ -17,20 +18,28 @@ class TFRecordDataset:
         self.orig_shape = orig_shape
         self.imgs_file = imgs
         self.lbls_file = lbls
+        self.augment = augment
+        self.augment_level = 3
         self.output_shape = output_shape
         self.target_pixel_mean = 0.0
         self.target_pixel_sd = 0.0
         self.source_pixel_mean = 0.0
         self.source_pixel_sd = 0.0
         self.normalize = False
-        self._read_labels()
+        self.db = None
+
+        if self.imgs_file:
+            self.db = pd.read_csv(self.imgs_file, usecols=['accession', 'bname'])
+
+        if self.lbls_file:
+            self._read_labels()
 
     def _read_labels(self):
-        db = pd.read_csv(self.imgs_file, usecols=['accession', 'bname'])
         labels = pd.read_csv(self.lbls_file, usecols=['accession', 'cancer_label'])
-        labels = pd.merge(db, labels, on='accession')
+        labels = pd.merge(self.db, labels, on='accession')
         self.bname_to_label = dict(zip(labels.bname, labels.cancer_label))
         self.labels = np.array([self.bname_to_label[re.sub('(_PROC(.+)?$|^r|^p|_\d$)', '', splitext(basename(tfrecord_path))[0])] for tfrecord_path in self.input_filenames])
+        self.binary_labels = (self.labels > 0).astype(np.uint8)
 
     def __len__(self):
         return int(np.ceil(len(self.input_filenames) / self.batch_size))
@@ -60,7 +69,6 @@ class TFRecordDataset:
         return np.array(list(dataset.as_numpy_iterator()))
     
     def get_input_fn(self):
-
         concurrent_threads = tf.data.experimental.AUTOTUNE
         label_dataset = tf.data.Dataset.from_tensor_slices(self.binary_labels)
         dataset = tf.data.TFRecordDataset(self.input_filenames, num_parallel_reads=concurrent_threads)
@@ -136,3 +144,4 @@ class MyChannelRepeat(tf.keras.layers.Layer):
     def get_config(self):
         base_config = super(MyChannelRepeat, self).get_config()
         return base_config
+    
