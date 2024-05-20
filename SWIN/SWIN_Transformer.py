@@ -1,34 +1,3 @@
-"""
-Title: Image classification with Swin Transformers
-Author: [Rishit Dagli](https://twitter.com/rishit_dagli)
-Date created: 2021/09/08
-Last modified: 2021/09/08
-Description: Image classification using Swin Transformers, a general-purpose backbone for computer vision.
-Accelerator: GPU
-"""
-
-"""
-This example implements
-[Swin Transformer: Hierarchical Vision Transformer using Shifted Windows](https://arxiv.org/abs/2103.14030)
-by Liu et al. for image classification, and demonstrates it on the
-[CIFAR-100 dataset](https://www.cs.toronto.edu/~kriz/cifar.html).
-
-Swin Transformer (**S**hifted **Win**dow Transformer) can serve as a
-general-purpose backbone for computer vision. Swin Transformer is a hierarchical
-Transformer whose representations are computed with _shifted windows_. The
-shifted window scheme brings greater efficiency by limiting self-attention
-computation to non-overlapping local windows while also allowing for
-cross-window connections. This architecture has the flexibility to model
-information at various scales and has a linear computational complexity with
-respect to image size.
-
-This example requires TensorFlow 2.5 or higher.
-"""
-
-"""
-## Setup
-"""
-
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf  # For tf.data and preprocessing only.
@@ -36,67 +5,7 @@ import keras
 from keras import layers
 from keras import ops
 
-"""
-## Configure the hyperparameters
-
-A key parameter to pick is the `patch_size`, the size of the input patches.
-In order to use each pixel as an individual input, you can set `patch_size` to
-`(1, 1)`. Below, we take inspiration from the original paper settings for
-training on ImageNet-1K, keeping most of the original settings for this example.
-"""
-
-num_classes = 100
-input_shape = (32, 32, 3)
-
 patch_size = (2, 2)  # 2-by-2 sized patches
-dropout_rate = 0.03  # Dropout rate
-num_heads = 8  # Attention heads
-embed_dim = 64  # Embedding dimension
-num_mlp = 256  # MLP layer size
-# Convert embedded patches to query, key, and values with a learnable additive
-# value
-qkv_bias = True
-window_size = 2  # Size of attention window
-shift_size = 1  # Size of shifting window
-image_dimension = 32  # Initial image size
-
-num_patch_x = input_shape[0] // patch_size[0]
-num_patch_y = input_shape[1] // patch_size[1]
-
-learning_rate = 1e-3
-batch_size = 128
-num_epochs = 40
-validation_split = 0.1
-weight_decay = 0.0001
-label_smoothing = 0.1
-
-"""
-## Prepare the data
-
-We load the CIFAR-100 dataset through `keras.datasets`,
-normalize the images, and convert the integer labels to one-hot encoded vectors.
-"""
-
-(x_train, y_train), (x_test, y_test) = keras.datasets.cifar100.load_data()
-x_train, x_test = x_train / 255.0, x_test / 255.0
-y_train = keras.utils.to_categorical(y_train, num_classes)
-y_test = keras.utils.to_categorical(y_test, num_classes)
-num_train_samples = int(len(x_train) * (1 - validation_split))
-num_val_samples = len(x_train) - num_train_samples
-x_train, x_val = np.split(x_train, [num_train_samples])
-y_train, y_val = np.split(y_train, [num_train_samples])
-print(f"x_train shape: {x_train.shape} - y_train shape: {y_train.shape}")
-print(f"x_test shape: {x_test.shape} - y_test shape: {y_test.shape}")
-
-plt.figure(figsize=(10, 10))
-for i in range(25):
-    plt.subplot(5, 5, i + 1)
-    plt.xticks([])
-    plt.yticks([])
-    plt.grid(False)
-    plt.imshow(x_train[i])
-plt.show()
-
 
 """
 ## Helper functions
@@ -410,6 +319,27 @@ images on top of which we will later use the Swin Transformer class we built.
 
 
 # Using tf ops since it is only used in tf.data.
+class PatchExtraction(layers.Layer):
+    def __init__(self, patch_size, embed_dim, **kwargs):
+        super().__init__(**kwargs)
+        self.patch_size = patch_size
+        self.embed_dim = embed_dim
+        self.proj = layers.Dense(embed_dim)
+
+    def call(self, images):
+        batch_size = tf.shape(images)[0]
+        patches = tf.image.extract_patches(
+            images=images,
+            sizes=(1, self.patch_size[0], self.patch_size[1], 1),
+            strides=(1, self.patch_size[0], self.patch_size[1], 1),
+            rates=(1, 1, 1, 1),
+            padding="VALID",
+        )
+        patch_dim = patches.shape[-1]
+        patch_num = patches.shape[1] * patches.shape[2]
+        patches = tf.reshape(patches, (batch_size, patch_num, patch_dim))
+        return self.proj(patches)
+    
 def patch_extract(images):
     batch_size = tf.shape(images)[0]
     patches = tf.image.extract_patches(
@@ -456,146 +386,4 @@ class PatchMerging(keras.layers.Layer):
         return self.linear_trans(x)
 
 
-"""
-### Prepare the tf.data.Dataset
 
-We do all the steps, which do not have trainable weights with tf.data.
-Prepare the training, validation and testing sets.
-
-"""
-
-
-def augment(x):
-    x = tf.image.random_crop(x, size=(image_dimension, image_dimension, 3))
-    x = tf.image.random_flip_left_right(x)
-    return x
-
-
-dataset = (
-    tf.data.Dataset.from_tensor_slices((x_train, y_train))
-    .map(lambda x, y: (augment(x), y))
-    .batch(batch_size=batch_size)
-    .map(lambda x, y: (patch_extract(x), y))
-    .prefetch(tf.data.experimental.AUTOTUNE)
-)
-
-dataset_val = (
-    tf.data.Dataset.from_tensor_slices((x_val, y_val))
-    .batch(batch_size=batch_size)
-    .map(lambda x, y: (patch_extract(x), y))
-    .prefetch(tf.data.experimental.AUTOTUNE)
-)
-
-dataset_test = (
-    tf.data.Dataset.from_tensor_slices((x_test, y_test))
-    .batch(batch_size=batch_size)
-    .map(lambda x, y: (patch_extract(x), y))
-    .prefetch(tf.data.experimental.AUTOTUNE)
-)
-
-"""
-### Build the model
-
-We put together the Swin Transformer model.
-"""
-
-input = layers.Input(shape=(256, 12))
-x = PatchEmbedding(num_patch_x * num_patch_y, embed_dim)(input)
-x = SwinTransformer(
-    dim=embed_dim,
-    num_patch=(num_patch_x, num_patch_y),
-    num_heads=num_heads,
-    window_size=window_size,
-    shift_size=0,
-    num_mlp=num_mlp,
-    qkv_bias=qkv_bias,
-    dropout_rate=dropout_rate,
-)(x)
-x = SwinTransformer(
-    dim=embed_dim,
-    num_patch=(num_patch_x, num_patch_y),
-    num_heads=num_heads,
-    window_size=window_size,
-    shift_size=shift_size,
-    num_mlp=num_mlp,
-    qkv_bias=qkv_bias,
-    dropout_rate=dropout_rate,
-)(x)
-x = PatchMerging((num_patch_x, num_patch_y), embed_dim=embed_dim)(x)
-x = layers.GlobalAveragePooling1D()(x)
-output = layers.Dense(num_classes, activation="softmax")(x)
-
-"""
-### Train on CIFAR-100
-
-We train the model on CIFAR-100. Here, we only train the model
-for 40 epochs to keep the training time short in this example.
-In practice, you should train for 150 epochs to reach convergence.
-"""
-
-model = keras.Model(input, output)
-model.compile(
-    loss=keras.losses.CategoricalCrossentropy(label_smoothing=label_smoothing),
-    optimizer=keras.optimizers.AdamW(
-        learning_rate=learning_rate, weight_decay=weight_decay
-    ),
-    metrics=[
-        keras.metrics.CategoricalAccuracy(name="accuracy"),
-        keras.metrics.TopKCategoricalAccuracy(5, name="top-5-accuracy"),
-    ],
-)
-
-history = model.fit(
-    dataset,
-    batch_size=batch_size,
-    epochs=num_epochs,
-    validation_data=dataset_val,
-)
-
-"""
-Let's visualize the training progress of the model.
-"""
-
-plt.plot(history.history["loss"], label="train_loss")
-plt.plot(history.history["val_loss"], label="val_loss")
-plt.xlabel("Epochs")
-plt.ylabel("Loss")
-plt.title("Train and Validation Losses Over Epochs", fontsize=14)
-plt.legend()
-plt.grid()
-plt.show()
-
-"""
-Let's display the final results of the training on CIFAR-100.
-"""
-
-loss, accuracy, top_5_accuracy = model.evaluate(dataset_test)
-print(f"Test loss: {round(loss, 2)}")
-print(f"Test accuracy: {round(accuracy * 100, 2)}%")
-print(f"Test top 5 accuracy: {round(top_5_accuracy * 100, 2)}%")
-
-"""
-The Swin Transformer model we just trained has just 152K parameters, and it gets
-us to ~75% test top-5 accuracy within just 40 epochs without any signs of
-overfitting as well as seen in above graph. This means we can train this network
-for longer (perhaps with a bit more regularization) and obtain even better
-performance. This performance can further be improved by additional techniques
-like cosine decay learning rate schedule, other data augmentation techniques.
-While experimenting, I tried training the model for 150 epochs with a slightly
-higher dropout and greater embedding dimensions which pushes the performance to
-~72% test accuracy on CIFAR-100 as you can see in the screenshot.
-
-![Results of training for longer](https://i.imgur.com/9vnQesZ.png)
-
-The authors present a top-1 accuracy of 87.3% on ImageNet. The authors also
-present a number of experiments to study how input sizes, optimizers etc. affect
-the final performance of this model. The authors further present using this
-model for object detection, semantic segmentation and instance segmentation as
-well and report competitive results for these. You are strongly advised to also
-check out the [original paper](https://arxiv.org/abs/2103.14030).
-
-This example takes inspiration from the official
-[PyTorch](https://github.com/microsoft/Swin-Transformer) and
-[TensorFlow](https://github.com/VcampSoldiers/Swin-Transformer-Tensorflow)
-implementations.
-"""
