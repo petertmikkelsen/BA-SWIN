@@ -6,18 +6,21 @@ from keras import layers
 import tensorflow as tf
 import keras
 
+# MAC weird stuff
+# import os
+# os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-image_shape = (1280, 1280)
-image_flat = image_shape[0] * image_shape[1]
-# image_shape = (1194, 938)
-batch_size = 10
+#image_shape = (1280, 1280)
+image_shape = (1194, 938)
+output_shape = (224, 224)
+batch_size = 2
 num_epochs = 60
 learning_rate = 0.00001
 fold_to_use = 0
 
-num_classes = 2
-input_shape = (1280, 1280, 1)
-#input_shape = (1194, 938, 1)
+num_classes = 1
+#input_shape = (1280, 1280, 1)
+input_shape = (1194, 938, 1)
 patch_size = (2, 2)  # 2-by-2 sized patches
 dropout_rate = 0.03  # Dropout rate
 num_heads = 8  # Attention heads
@@ -30,10 +33,12 @@ patch_channels = patch_size[0] * patch_size[1] * 3
 qkv_bias = True
 window_size = 2  # Size of attention window
 shift_size = 1  # Size of shifting window
-image_dimension = 1280  # Initial image size
+image_dimension = 224 # Initial image size
 
-num_patch_x = input_shape[0] // patch_size[0]
-num_patch_y = input_shape[1] // patch_size[1]
+num_patch_x = image_dimension // patch_size[0]
+num_patch_y = image_dimension // patch_size[1]
+
+image_flat = image_dimension * image_dimension
 
 learning_rate = 1e-3
 batch_size = 10
@@ -44,24 +49,22 @@ label_smoothing = 0.1
 
 # Prepare the data
 # Step 1: Convert our TFRecord dataset to a numpy array, with the correct labels from the cvs files.
-dataset_path = 'Mini - SWIN/DK_dataset_1213'
+dataset_path = 'SWIN/DK_dataset_1213'
 if not exists('ModelsAndResults/test'):
     makedirs('ModelsAndResults/test')
 model_dir = 'ModelsAndResults/test/test_model_fold_%i' % fold_to_use
 image_training_list = join(dataset_path, 'training_fold_%i.txt' % fold_to_use)
 image_validation_list = join(dataset_path, 'validation_fold_%i.txt' % fold_to_use)
-imgs = 'Mini - SWIN/NoisyLabels/available_image_data_DK1213_fixed.csv'
-lbls = 'Mini - SWIN/NoisyLabels/DK_labels_1213_to_23_fixed.csv'
+imgs = 'SWIN/NoisyLabels/available_image_data_DK1213_fixed.csv'
+lbls = 'SWIN/NoisyLabels/DK_labels_1213_to_23_fixed.csv'
 
 print('Using dataset: %s' % dataset_path)
-
-
 
 # TF record datasets
 training_dataset = TFRecordDataset(
     input=image_training_list, 
     orig_shape=image_shape, 
-    output_shape=image_shape, 
+    output_shape=output_shape, 
     batch_size=batch_size, 
     imgs=imgs,
     lbls=lbls
@@ -70,30 +73,11 @@ training_dataset = TFRecordDataset(
 validation_dataset = TFRecordDataset(
     input=image_validation_list, 
     orig_shape=image_shape, 
-    output_shape=image_shape, 
+    output_shape=output_shape, 
     batch_size=batch_size, 
     imgs=imgs,
     lbls=lbls
 )
-
-# get input fn
-training_dataset = training_dataset.get_input_fn()
-validation_dataset = validation_dataset.get_input_fn()
-
-training_dataset = training_dataset.map(swin_preprocess_image)
-validation_dataset = validation_dataset.map(swin_preprocess_image)
-
-training_dataset = training_dataset.map(lambda x, y: patch_extract(x, y))
-validation_dataset = validation_dataset.map(lambda x, y: patch_extract(x, y))
-
-# Step 2: Initialize the model and compile it
-
-# TO-DO, check if all other channels are zero-padded due to just setting as 12 instead of my_channel_repeat
-# input = MyChannelRepeat(3)(input)
-
-# previous input to model
-# image_input = tf.keras.Input(shape=image_shape + (1,), dtype=tf.float32)
-# image_repeat = MyChannelRepeat(3)(image_input)
 
 # input to model
 # patch_x * patch_y * channels
@@ -125,29 +109,31 @@ x = SwinTransformer(
 
 x = PatchMerging((num_patch_x, num_patch_y), embed_dim=embed_dim)(x)
 x = layers.GlobalAveragePooling1D()(x)
-output = layers.Dense(num_classes, activation='softmax')(x)
+output = layers.Dense(num_classes, activation='sigmoid')(x)
 
 # Initialize the model
-model = tf.keras.Model(input_layer, output)
-
+model = keras.Model(input_layer, output)
 model.compile(
-    loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=label_smoothing),
-    optimizer=tf.keras.optimizers.AdamW(
+    loss=tf.keras.losses.BinaryCrossentropy(from_logits=False),
+    optimizer=tf.keras.optimizers.Adam(
         learning_rate=learning_rate,
-        weight_decay=weight_decay
+        #weight_decay=weight_decay
     ),
     metrics=[
-        keras.metrics.CategoricalAccuracy(name='accuracy'),
-        keras.metrics.TopKCategoricalAccuracy(k=5, name='top-5-accuracy'),
+        #keras.metrics.CategoricalAccuracy(name='accuracy'),
+        #keras.metrics.TopKCategoricalAccuracy(k=5, name='top-5-accuracy'),
+        tf.keras.metrics.BinaryAccuracy(name='binary_accuracy'),
     ],
 )
-
+callbacks = init_loggers(model_dir, validation_dataset)
 
 history = model.fit(
-    training_dataset,
+    x=training_dataset.get_input_fn().repeat(),
+    steps_per_epoch=len(training_dataset),
+    callbacks=callbacks,
     batch_size=batch_size,
     epochs=num_epochs,
-    validation_data=validation_dataset,
+    #validation_data=validation_dataset,
 )
 
 plt.plot(history.history["loss"], label="train_loss")
@@ -160,7 +146,7 @@ plt.grid()
 plt.show()
 
 """
-Let's display the final results of the training on CIFAR-100.
+Let's display the final results of the training.
 """
 
 loss, accuracy, top_5_accuracy = model.evaluate(validation_dataset)

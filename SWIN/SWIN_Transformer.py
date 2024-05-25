@@ -342,18 +342,7 @@ class PatchExtraction(layers.Layer):
         patches = tf.reshape(patches, (batch_size, patch_num, patch_dim))
         return self.proj(patches)
     
-def patch_extract(images, labels):
-    batch_size = tf.shape(images)[0]
-    patches = tf.image.extract_patches(
-        images=images,
-        sizes=(1, patch_size[0], patch_size[1], 1),
-        strides=(1, patch_size[0], patch_size[1], 1),
-        rates=(1, 1, 1, 1),
-        padding="VALID",
-    )
-    patch_dim = patches.shape[-1]
-    patch_num = patches.shape[1]
-    return tf.reshape(patches, (batch_size, patch_num * patch_num, patch_dim)), labels
+
 
 
 class PatchEmbedding(layers.Layer):
@@ -387,9 +376,8 @@ class PatchMerging(keras.layers.Layer):
         x = ops.reshape(x, (-1, (height // 2) * (width // 2), 4 * C))
         return self.linear_trans(x)
 
-def swin_preprocess_image(image, label, image_dimension=1280):
-    image = tf.image.resize_with_pad(image, target_height=image_dimension, target_width=image_dimension)
-    #image = tf.expand_dims(image, axis=-1)
-    image = MyChannelRepeat(3)(image)
-    label = tf.one_hot(label, 2)
-    return image, label
+def print_tfrecord_contents(tfrecord):
+    for data in tfrecord.take(1):
+        example = tf.train.Example()
+        example.ParseFromString(data.numpy())
+        print(example)
