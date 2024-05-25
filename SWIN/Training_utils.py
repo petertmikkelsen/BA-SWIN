@@ -9,6 +9,9 @@ from os.path import expanduser, join, splitext, basename, exists
 from sklearn.metrics import roc_curve, roc_auc_score, log_loss, confusion_matrix, balanced_accuracy_score
 from os import makedirs
 from keras import layers
+import glob
+from SWIN_Transformer import *
+import csv
 
 #MAC weird stuff
 # os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -137,7 +140,6 @@ class MyChannelRepeat(tf.keras.layers.Layer):
         base_config = super(MyChannelRepeat, self).get_config()
         return base_config
 
-
 #Probably not an image actually    
 def swin_preprocess_image(image, label, image_dimension=1280):
     image = tf.image.resize_with_pad(image, target_height=image_dimension, target_width=image_dimension)
@@ -159,6 +161,7 @@ def patch_extract(images, labels, patch_size = (2, 2)):
     patch_dim = patches.shape[-1]
     patch_num = patches.shape[1]
     return tf.reshape(patches, (batch_size, patch_num * patch_num, patch_dim)), labels
+
 
 def init_loggers(model_dir, validation_dataset, multi_flavor_val=False):
     tensorboard_callback = tf.keras.callbacks.TensorBoard(
@@ -242,7 +245,7 @@ class MyCallbacks(tf.keras.callbacks.Callback):
 
         if self.multi_flavor_val:
             res_df = res_df.rename(columns={'bname': 'flavor_bname'})
-            res_df = res_df.assign(bname=res_df.flavor_bname.map(lambda x: re.sub('(_PROC(.+)?$|^r|^p)', '', x)))
+            res_df = res_df.assign(bname=res_df.flavor_bname.map(lambda x: re.sub(r'(_PROC(.+)?$|^r|^p)', '', x)))
             res_df = res_df[['bname', 'score', 'label']]
             res_df = res_df.groupby('bname', sort=False).agg({'score': 'mean', 'label': 'max'}).reset_index()
 
@@ -302,6 +305,29 @@ class MyCallbacks(tf.keras.callbacks.Callback):
 
         logs['val_binary_accuracy'] = tf.constant(bin_acc)
 
+        def extract_float_values(logs):
+            new_logs = {}
+            for key, value in logs.items():
+                if isinstance(value, tf.Tensor):
+                    new_logs[key] = value.numpy().item()  # Convert tensor to a float value
+                else:
+                    new_logs[key] = value
+            return new_logs
+        
+        csv_file_path = os.path.join(self.model_path, 'model_history.csv')
+
+        file_exists = os.path.isfile(csv_file_path)
+
+        logs = extract_float_values(logs)
+
+        with open(csv_file_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=logs.keys())
+
+            if not file_exists:
+                writer.writeheader()
+            
+            writer.writerow(logs)
+
         print('AUC (all):   %.2f ---- AUC (SDC):   %.2f ---- AUC (IC):  %.2f   ---- AUC (LTC):       %.2f\n'\
               'Loss (all):  %.2f ---- Loss (SDC):  %.2f ---- Loss (IC): %.2f   ---- Loss (LTC):      %.2f\n'\
               'Sensitivity: %.2f ---- Specificity: %.2f ---- Threshold: %.4f ---- Binary Accuracy: %.2f' % (
@@ -318,3 +344,94 @@ class MyCallbacks(tf.keras.callbacks.Callback):
             logs['val_thres'],
             logs['val_binary_accuracy']
         ), '\n\n')
+
+def init_model(model_dir, learning_rate):
+    model_weights_path = expanduser('Weights/initial_weights.weights.h5')
+    start_from_epoch = 0
+
+    if not exists(model_dir):
+        print('Training from scratch.')
+        makedirs(model_dir)
+        makedirs(join(model_dir, 'models'))
+    else:
+        models = glob.glob(join(model_dir, 'models', '*'))
+        if len(models) == 0:
+            print('No models were stored. Training from scratch.')
+        else:
+            model_weights_path = max(glob.glob(join(model_dir, 'models', '*')), key=lambda x: int(re.findall(r'\.(\d{3})-', x)[0]))
+            start_from_epoch = int(re.findall(r'\.(\d{3})-', model_weights_path)[0])
+            print('Starting from checkpoint %s. Epoch=%i (one-indexed)' % (model_weights_path, start_from_epoch))
+
+    # variables
+    num_classes = 1
+    patch_size = (2, 2)  # 2-by-2 sized patches
+    dropout_rate = 0.03  # Dropout rate
+    num_heads = 8  # Attention heads
+    embed_dim = 64  # Embedding dimension
+    num_mlp = 256  # MLP layer size
+    patch_channels = patch_size[0] * patch_size[1] * 3
+
+    # Convert embedded patches to query, key, and values with a learnable additive
+    # value
+    qkv_bias = True
+    window_size = 7  # Size of attention window
+    shift_size = window_size // 2  # Size of shifting window
+    image_dimension = 224 # Initial image size
+
+    num_patch_x = image_dimension // patch_size[0]
+    num_patch_y = image_dimension // patch_size[1]
+
+    image_flat = image_dimension * image_dimension
+    
+    input_layer = layers.Input(shape=(image_flat // 4, patch_channels))
+
+    # Begin stage 1
+    x = PatchEmbedding(num_patch_x * num_patch_y, embed_dim)(input_layer)
+
+    x = SWIN_BLOCK(x, embed_dim, num_patch_x, num_patch_y, num_heads, window_size, shift_size, num_mlp, qkv_bias, dropout_rate)
+    # End of stage 1
+
+    # Begin stage 2
+    x = PatchMerging((num_patch_x, num_patch_y), embed_dim=embed_dim)(x)
+
+    x = SWIN_BLOCK(x, embed_dim*2, num_patch_x // 2, num_patch_y // 2, num_heads, window_size, shift_size, num_mlp, qkv_bias, dropout_rate)
+    # End of stage 2
+
+    # Begin stage 3
+    x = PatchMerging((num_patch_x // 2, num_patch_y // 2), embed_dim=embed_dim)(x)
+
+    x = SWIN_BLOCK(x, embed_dim*2, num_patch_x // 4, num_patch_y // 4, num_heads, window_size, shift_size, num_mlp, qkv_bias, dropout_rate)
+
+    x = SWIN_BLOCK(x, embed_dim*2, num_patch_x // 4, num_patch_y // 4, num_heads, window_size, shift_size, num_mlp, qkv_bias, dropout_rate)
+
+    x = SWIN_BLOCK(x, embed_dim*2, num_patch_x // 4, num_patch_y // 4, num_heads, window_size, shift_size, num_mlp, qkv_bias, dropout_rate)
+    # End of stage 3
+
+
+    # Begin stage 4
+    x = PatchMerging((num_patch_x // 4, num_patch_y // 4), embed_dim=embed_dim)(x)
+
+    x = SWIN_BLOCK(x, embed_dim*2, num_patch_x // 8, num_patch_y // 8, num_heads, window_size, shift_size, num_mlp, qkv_bias, dropout_rate)
+    # End of stage 4
+
+
+    x = layers.GlobalAveragePooling1D()(x)
+    output = layers.Dense(num_classes, activation='sigmoid')(x)
+
+    # Initialize the model
+    model = keras.Model(input_layer, output)
+    model.compile(
+        loss=tf.keras.losses.BinaryCrossentropy(from_logits=False),
+        optimizer=tf.keras.optimizers.Adam(
+            learning_rate=learning_rate,
+            #weight_decay=weight_decay
+        ),
+        metrics=[
+            #keras.metrics.CategoricalAccuracy(name='accuracy'),
+            #keras.metrics.TopKCategoricalAccuracy(k=5, name='top-5-accuracy'),
+            tf.keras.metrics.AUC(curve='ROC', name='AUC'),
+            tf.keras.metrics.BinaryAccuracy(name='binary_accuracy'),
+            tf.keras.metrics.SensitivityAtSpecificity(specificity=0.85, name='SensAtSpec')
+        ],
+    )
+    return model, start_from_epoch

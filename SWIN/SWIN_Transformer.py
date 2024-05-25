@@ -4,8 +4,6 @@ import tensorflow as tf  # For tf.data and preprocessing only.
 import keras
 from keras import layers
 from keras import ops
-from Training_utils import *
-
 
 patch_size = (2, 2)  # 2-by-2 sized patches
 
@@ -342,9 +340,6 @@ class PatchExtraction(layers.Layer):
         patches = tf.reshape(patches, (batch_size, patch_num, patch_dim))
         return self.proj(patches)
     
-
-
-
 class PatchEmbedding(layers.Layer):
     def __init__(self, num_patch, embed_dim, **kwargs):
         super().__init__(**kwargs)
@@ -381,3 +376,27 @@ def print_tfrecord_contents(tfrecord):
         example = tf.train.Example()
         example.ParseFromString(data.numpy())
         print(example)
+
+def SWIN_BLOCK(x, embed_dim, num_patch_x, num_patch_y, num_heads, window_size, shift_size, num_mlp, qkv_bias, dropout_rate):
+    x = SwinTransformer(
+        dim=embed_dim,
+        num_patch=(num_patch_x, num_patch_y),
+        num_heads=num_heads,
+        window_size=window_size,
+        shift_size=0,
+        num_mlp=num_mlp,
+        qkv_bias=qkv_bias,
+        dropout_rate=dropout_rate,
+    )(x)
+
+    x = SwinTransformer(
+        dim=embed_dim,
+        num_patch=(num_patch_x, num_patch_y),
+        num_heads=num_heads,
+        window_size=window_size,
+        shift_size=shift_size,
+        num_mlp=num_mlp,
+        qkv_bias=qkv_bias,
+        dropout_rate=dropout_rate,
+    )(x)
+    return x

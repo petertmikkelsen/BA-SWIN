@@ -2,11 +2,9 @@ from training_utils import *
 from os.path import join
 import sys
 import pandas as pd
-import types
-import tensorflow as tf
 
-#if len(sys.argv) < 2:
-#    exit('Missing fold to use argument')
+# if len(sys.argv) < 2:
+#     exit('Missing fold to use argument')
 
 # Training params
 image_shape = (1194, 938)
@@ -22,9 +20,9 @@ print('Training fold %i' % fold_to_use)
 
 # Dataset inputs
 dataset_path = 'Mini - SWIN/DK_dataset_1213'
-if not exists('ModelsAndResults/test'):
-    makedirs('ModelsAndResults/test')
-model_dir = 'ModelsAndResults/test/test_model_fold_%i' % fold_to_use
+if not exists('Andreas - Resnet/ModelsAndResults/test'):
+    makedirs('Andreas - Resnet/ModelsAndResults/test')
+model_dir = 'Andreas - Resnet/ModelsAndResults/test/test_model_fold_%i' % fold_to_use
 image_training_list = join(dataset_path, 'training_fold_%i.txt' % fold_to_use)
 image_validation_list = join(dataset_path, 'validation_fold_%i.txt' % fold_to_use)
 imgs = 'Mini - SWIN/NoisyLabels/available_image_data_DK1213_fixed.csv'
@@ -48,44 +46,15 @@ validation_dataset = TFRecordDataset(
 )
 
 # Setting up model and compile
-# model, initial_epoch = init_model(model_dir, image_shape, learning_rate)
-
 model, initial_epoch = init_model(model_dir, image_shape, learning_rate)
 
 # Setting up loggers
 callbacks = init_loggers(model_dir, validation_dataset)
 
-# to check to train_data type
-#train_data = training_dataset.get_input_fn().repeat()
-
-# Without np.array
-# train_data = training_dataset.get_input_fn().as_numpy_iterator()
-# But with just .numpy
-# train_data = training_dataset.get_input_fn().numpy()
-
-
-# with np.array
-# train_data = np.array(list(training_dataset.get_input_fn().as_numpy_iterator()))
-
-# for features, labels in train_data.take(1):
-#     print("Feature batch shape:", features.shape)
-#     print("Label batch shape:", labels.shape)
-#     print("Feature batch dtype:", features.dtype)
-#     print("Label batch dtype:", labels.dtype)
-
-# np_train_data = np.asarray(train_data)
-
-steps_per_epoch = len(training_dataset) // batch_size
-if (len(training_dataset) % batch_size) != 0:
-    steps_per_epoch += 1
-
-#tf.random.set_seed(1)
-#tf.config.run_functions_eagerly(True)
-
 # Train the model
 history = model.fit(
     x=training_dataset.get_input_fn().repeat(),
-    steps_per_epoch=steps_per_epoch,
+    steps_per_epoch=len(training_dataset),
     epochs=num_epochs,
     callbacks=callbacks,
     initial_epoch=initial_epoch,
